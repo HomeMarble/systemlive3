@@ -349,3 +349,10 @@ tr.ex-unread td{font-weight:700;background:var(--yellow-bg)}
   .ex-bigpass{font-size:20px}
 }
 @media print{.ex-launch,.ex-widget,.ex-top,.ex-topicon{display:none!important}}
+
+/* The connection report is persistent and readable on the login and retry screens. */
+.net-check{margin-top:16px;text-align:center}
+#hm-status:not(:empty),.net-result:not(:empty){margin-top:10px;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);text-align:start;white-space:pre-line;overflow-wrap:anywhere;font-size:14px}
+.net-target{text-align:start}.net-target summary{cursor:pointer;color:var(--brand);font-weight:700}.net-target p,.net-target label{display:block;margin-top:10px}
+.live.waiting{color:var(--muted);background:var(--bg)}
+.live.waiting i{background:currentColor;animation:none}

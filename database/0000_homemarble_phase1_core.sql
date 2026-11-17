@@ -1,4 +1,4 @@
--- HomeMarble ERP — Phase 1 core schema (reconstructed for Lovable Cloud)
+-- HomeMarble ERP — core schema for a fresh Supabase project (run once).
 create extension if not exists pgcrypto;
 
 create type public.app_role as enum ('admin','executive','sales','factory_manager','accountant');
@@ -115,6 +115,8 @@ returns boolean language sql stable security definer set search_path = public as
   select exists (select 1 from public.user_roles where user_id = auth.uid())
 $$;
 
+grant execute on function public.hm_p1_any(text[]), public.hm_p1_staff() to authenticated;
+
 -- branches
 create policy "p1_branches_read" on public.branches for select to authenticated using (public.hm_p1_staff());
 create policy "p1_branches_write" on public.branches for all to authenticated
@@ -177,19 +179,5 @@ create trigger trg_p1_audit after insert or update or delete on public.orders fo
 create trigger trg_p1_audit after insert or update or delete on public.documents for each row execute function public.hm_p1_audit();
 create trigger trg_p1_audit after insert or update or delete on public.user_roles for each row execute function public.hm_p1_audit();
 
--- new signup -> profile; first account becomes admin
-create or replace function public.hm_handle_new_user() returns trigger language plpgsql security definer set search_path = public as $$
-begin
-  insert into public.profiles (id, full_name, email)
-  values (new.id, coalesce(new.raw_user_meta_data ->> 'full_name', split_part(new.email, '@', 1)), new.email)
-  on conflict (id) do nothing;
-  if not exists (select 1 from public.user_roles) then
-    insert into public.user_roles (user_id, role) values (new.id, 'admin');
-  end if;
-  return new;
-end $$;
-create trigger on_auth_user_created after insert on auth.users for each row execute function public.hm_handle_new_user();
-
-alter publication supabase_realtime add table public.customers, public.orders, public.documents, public.user_roles, public.profiles, public.branches;
-
+-- Supabase Auth, Storage and Realtime are wired up after all phases in 0004.
 insert into public.branches (name, city) values ('معرض الرياض', 'الرياض'), ('معرض الخرج', 'الخرج');

@@ -751,22 +751,4 @@ grant execute on function public.hm_has_any(text[]), public.hm_is_staff(), publi
   public.hm_staff_directory(), public.hm_import_items(uuid), public.hm_receive_purchase(uuid, jsonb),
   public.hm_consume_reservation(uuid), public.hm_move_item(uuid, text, text, text) to authenticated;
 
-drop policy if exists "hm_files_read" on storage.objects;
-drop policy if exists "hm_files_insert" on storage.objects;
-drop policy if exists "hm_files_delete" on storage.objects;
-create policy "hm_files_read" on storage.objects for select to authenticated
-  using (bucket_id = 'hm-files' and public.hm_is_staff());
-create policy "hm_files_insert" on storage.objects for insert to authenticated
-  with check (bucket_id = 'hm-files' and public.hm_is_staff());
-create policy "hm_files_delete" on storage.objects for delete to authenticated
-  using (bucket_id = 'hm-files' and public.hm_has_any(array['admin','executive','factory_manager']));
-
-do $$ declare t text; begin
-  if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
-    foreach t in array array['suppliers','inventory_items','inventory_movements','inventory_reservations','purchase_requests',
-                             'order_items','production_logs','quality_checks','measurement_visits','installation_jobs'] loop
-      begin execute format('alter publication supabase_realtime add table public.%I', t);
-      exception when duplicate_object then null; when others then null; end;
-    end loop;
-  end if;
-end $$;
+-- Private hm-files policies and Realtime membership: see 0004.

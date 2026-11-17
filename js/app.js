@@ -1,8 +1,34 @@
 /* هوم ماربل — نظام الإدارة | المرحلة الأولى + المرحلة الثانية (إضافات عبر نقاط ربط فقط) */
 (function () {
-  const sb = supabase.createClient(HM_CONFIG.url, HM_CONFIG.key);
   const $ = (s, r) => (r || document).querySelector(s);
   const app = $("#app");
+  const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const net = window.HMNet;
+  const cfg = net?.config(window.HM_CONFIG);
+  const checkControls = `<div class="net-check"><button type="button" class="btn btn-line" id="hm-check">فحص الاتصال</button><p id="hm-status" role="status" aria-live="polite"></p></div>`;
+  const bindCheck = () => net.bindCheck(cfg, $("#hm-check"), $("#hm-status"));
+  function bootMessage(title, text, retry) {
+    const canCheck = cfg && !cfg.error;
+    app.innerHTML = `<main class="pending"><section class="card" role="alert"><h2>${esc(title)}</h2><p>${esc(text)}</p>${retry ? '<button type="button" class="btn btn-primary mt" id="hm-retry">إعادة المحاولة</button>' : ''}${canCheck ? checkControls : ''}</section></main>`;
+    if (retry) $("#hm-retry").onclick = async e => { e.currentTarget.disabled = true; await retry(); };
+    if (canCheck) bindCheck();
+  }
+  if (!net) return bootMessage("ملفات التشغيل غير مكتملة", "تحقّق من نشر js/connection.js من نفس نسخة الموقع ثم أعد تحميل الصفحة.");
+  if (cfg.error) return bootMessage("اتصال Supabase غير مُعدّ", cfg.error);
+  if (!window.supabase?.createClient) return bootMessage("تعذّر تحميل مكتبة Supabase", "تحقّق من نشر ملف المكتبة داخل js/vendor ثم أعد تحميل الصفحة.");
+  let sb;
+  try {
+    sb = window.supabase.createClient(cfg.url, cfg.key, {
+      // The pinned SDK retries transient GET/HEAD/OPTIONS, never a database write.
+      db: { retry: true, timeout: 30000 },
+      global: { fetch(input, init) {
+        if (String(input).startsWith(cfg.url + "/auth/v1/") && !init?.signal && typeof AbortSignal.timeout === "function") {
+          return window.fetch(input, { ...init, signal: AbortSignal.timeout(20000) });
+        }
+        return window.fetch(input, init);
+      } },
+    });
+  } catch { return bootMessage("تعذّر بدء الاتصال", "راجع إعدادات المشروع وملفات النسخة واستخدم متصفحاً محدثاً."); }
 
   // ---------- نقاط ربط الإضافات (المرحلة الثانية) — لا تؤثر على المرحلة الأولى إن لم توجد إضافات ----------
   const HMX = window.HM_EXT || [];
@@ -28,7 +54,6 @@
   const S = { session: null, user: null, profile: null, roles: [], branches: [], customers: [], orders: [], documents: [], profiles: [], allRoles: [], audit: [], route: "", channel: null };
 
   // ---------- helpers ----------
-  const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const money = (n) => Number(n || 0).toLocaleString("en-US", { maximumFractionDigits: 2 });
   const d = (t) => (t ? new Date(t).toLocaleDateString("en-CA").replace(/-/g, "/") : "—");
   const has = (...r) => S.roles.some((x) => r.includes(x));
@@ -48,7 +73,7 @@
     $("#toast-root").appendChild(t);
     setTimeout(() => t.remove(), 4200);
   }
-  function errMsg(e) { return (e && (e.message || e.error_description)) || "حدث خطأ غير متوقع"; }
+  const errMsg = net.message;
 
   function modal(title, body, actions) {
     const root = $("#modal-root");
@@ -63,47 +88,62 @@
   // ---------- data ----------
   // تحميل كل الصفوف على دفعات (1000 صف لكل دفعة) لتجاوز حد قاعدة البيانات — بلا حد أقصى لعدد العملاء
   async function fetchAll(table, col, asc) {
-    const all = []; const size = 1000;
-    for (let from = 0; ; from += size) {
-      const r = await sb.from(table).select("*").order(col, { ascending: asc }).order("id", { ascending: true }).range(from, from + size - 1);
-      if (r.error) return all.length ? { data: all, error: null } : r;
-      const d = r.data || []; all.push(...d);
-      if (d.length < size) return { data: all, error: null };
+    const all = [], size = 1000;
+    let total;
+    for (;;) {
+      const from = all.length;
+      const r = await sb.from(table).select("*", from === 0 ? { count: "exact" } : {}).order(col, { ascending: asc }).order("id", { ascending: true }).range(from, from + size - 1);
+      const page = net.rows(r); // throws even if earlier pages succeeded
+      if (from === 0) {
+        total = r.count;
+        if (!Number.isSafeInteger(total) || total < 0) throw new Error("لم يصل العدد الكلي للسجلات من واجهة البيانات؛ تعذّر التأكد من اكتمال القائمة.");
+      }
+      all.push(...page);
+      if (all.length >= total) return all;
+      if (!page.length) throw new Error("تغيّر عدد السجلات قبل اكتمال القراءة. أعد تحميل البيانات.");
     }
   }
-  async function loadAll() {
-    const q = await Promise.all([
-      sb.from("branches").select("*").order("name"),
-      fetchAll("customers", "created_at", false),
-      fetchAll("orders", "order_no", false),
-      fetchAll("documents", "created_at", false),
-      fetchAll("profiles", "created_at", true),
-      sb.from("user_roles").select("*"),
+  // Stage a whole UI snapshot. Nothing is published if a later page or another
+  // module fails, or if the session changes while the requests are in flight.
+  async function readSnapshot(ticket) {
+    const [branches, customers, orders, documents, profiles, allRoles, audit] = await Promise.all([
+      sb.from("branches").select("*").order("name").then(r => net.rows(r)),
+      fetchAll("customers", "created_at", false), fetchAll("orders", "order_no", false),
+      fetchAll("documents", "created_at", false), fetchAll("profiles", "created_at", true),
+      sb.from("user_roles").select("*").then(r => net.rows(r)),
+      isMgr() ? sb.from("audit_log").select("*").order("created_at", { ascending: false }).limit(200).then(r => net.rows(r)) : [],
     ]);
-    S.branches = q[0].data || []; S.customers = q[1].data || []; S.orders = q[2].data || [];
-    S.documents = q[3].data || []; S.profiles = q[4].data || []; S.allRoles = q[5].data || [];
-    if (isMgr()) { const a = await sb.from("audit_log").select("*").order("created_at", { ascending: false }).limit(200); S.audit = a.data || []; }
-    try { await Promise.all(X("load")); } catch (er) { console.error("[HM_EXT] load", er); }
+    if (epoch !== ticket) return;
+    const core = { branches, customers, orders, documents, profiles, allRoles, audit };
+    const commits = await Promise.all(HMX.map(ext => ext.load?.(core)));
+    return () => { Object.assign(S, core); commits.forEach(apply => apply?.()); };
   }
 
-  let reloadTimer;
-  function subscribeRealtime() {
+  let reloadTimer, subscribedScope, live = false;
+  function setLive(status) {
+    live = status === "SUBSCRIBED";
+    const el = $("#hm-live");
+    if (el) { el.classList.toggle("waiting", !live); el.lastElementChild.textContent = live ? "مباشر" : "تحديث دوري"; }
+  }
+  function subscribeRealtime(scope) {
+    const tables = [...new Set(["customers", "orders", "documents", "user_roles", "profiles", "branches"].concat(...X("realtimeTables").filter(Array.isArray)))];
+    const signature = JSON.stringify([scope, tables]);
+    if (S.channel && subscribedScope === signature) return;
     if (S.channel) sb.removeChannel(S.channel);
-    S.channel = sb.channel("hm-live-" + Math.random().toString(36).slice(2));
-    ["customers", "orders", "documents", "user_roles", "profiles"].concat(...X("realtimeTables").filter(Array.isArray)).forEach((t) =>
-      S.channel.on("postgres_changes", { event: "*", schema: "public", table: t }, () => {
-        clearTimeout(reloadTimer);
-        reloadTimer = setTimeout(async () => { await loadRoles(); await loadAll(); render(true); }, 300);
-      })
-    );
-    S.channel.subscribe();
+    const ch = S.channel = sb.channel("hm-live-" + Math.random().toString(36).slice(2));
+    subscribedScope = signature; setLive("");
+    tables.forEach(t => ch.on("postgres_changes", { event: "*", schema: "public", table: t }, () => {
+      clearTimeout(reloadTimer); reloadTimer = setTimeout(() => refresh(true), 300);
+    }));
+    ch.subscribe(status => { if (S.channel === ch) setLive(status); });
   }
 
-  async function loadRoles() {
-    const { data } = await sb.from("user_roles").select("role").eq("user_id", S.user.id);
-    S.roles = (data || []).map((r) => r.role);
-    const p = await sb.from("profiles").select("*").eq("id", S.user.id).maybeSingle();
-    S.profile = p.data;
+  async function readRoles(uid) {
+    const [roles, profile] = await Promise.all([
+      sb.from("user_roles").select("role").eq("user_id", uid),
+      sb.from("profiles").select("*").eq("id", uid).maybeSingle(),
+    ]);
+    return { roles: net.rows(roles).map(r => r.role), profile: net.checked(profile).data };
   }
 
   // ---------- auth ----------
@@ -122,27 +162,29 @@
           ${mode !== "reset" ? `<div class="field"><label>كلمة المرور</label><input class="input" type="password" name="password" minlength="6" required dir="ltr"></div>` : ""}
           <button class="btn btn-primary btn-block" type="submit">${mode === "in" ? "دخول" : mode === "up" ? "إنشاء الحساب" : "إرسال الرابط"}</button>
         </form>
+        ${checkControls}
         <p style="margin-top:16px;text-align:center;font-size:14px">${mode === "reset" ? `<a data-mode="in">العودة لتسجيل الدخول</a>` : `<a data-mode="reset">نسيت كلمة المرور؟</a>`}</p>
       </div></div>
     </div>`;
+    bindCheck();
     app.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => renderAuth(b.dataset.mode)));
     $("#authf").addEventListener("submit", async (e) => {
       e.preventDefault();
-      const f = formData(e.target); const btn = e.target.querySelector("button"); btn.disabled = true;
+      const f = formData(e.target), status = $("#hm-status"); const btn = e.target.querySelector("button"); btn.disabled = true; status.textContent = "";
       try {
         if (mode === "in") {
           const { error } = await sb.auth.signInWithPassword({ email: f.email, password: f.password });
           if (error) throw error;
         } else if (mode === "up") {
-          const { error } = await sb.auth.signUp({ email: f.email, password: f.password, options: { data: { full_name: f.full_name }, ...(location.protocol.startsWith("http") ? { emailRedirectTo: location.href.split("#")[0] } : {}) } });
+          const { data, error } = await sb.auth.signUp({ email: f.email, password: f.password, options: { data: { full_name: f.full_name }, ...(location.protocol.startsWith("http") ? { emailRedirectTo: location.href.split("#")[0] } : {}) } });
           if (error) throw error;
-          toast("تم إنشاء الحساب وتسجيل الدخول", "ok");
+          toast(data.session ? "تم إنشاء الحساب وتسجيل الدخول" : "راجع بريدك لتأكيد الحساب قبل تسجيل الدخول", "ok");
         } else {
           const { error } = await sb.auth.resetPasswordForEmail(f.email, { redirectTo: location.href.split("#")[0] + "#/reset-password" });
           if (error) throw error;
           toast("تم إرسال رابط الاستعادة إلى بريدك", "ok");
         }
-      } catch (er) { toast(errMsg(er), "err"); }
+      } catch (er) { status.textContent = errMsg(er, mode === "in" ? "login" : undefined); }
       btn.disabled = false;
     });
     X("authRendered", mode);
@@ -213,7 +255,7 @@
           <div class="gsearch">${icon("search", 18)}<input class="input" id="gs" placeholder="ابحث عن عميل، رقم طلب، فاتورة أو جوال..." autocomplete="off"><div class="gresults" id="gr" hidden></div></div>
           <div class="top-spacer"></div>
           ${XS("topbar")}
-          <span class="live"><i></i> مباشر</span>
+          <span id="hm-live" class="live${live ? "" : " waiting"}"><i></i><span>${live ? "مباشر" : "تحديث دوري"}</span></span>
           <button class="bell" id="bell">${icon("bell", 22)}${al.length ? `<span class="dot">${al.reduce((a, b) => a + b[3], 0)}</span>` : ""}</button>
           <div class="me"><div class="avatar">${esc(name.trim()[0] || "؟")}</div><div><b>${esc(ROLE_LABEL[S.roles[0]] || "")}</b><small>${esc(name)}${S.profile && S.profile.branch_id ? " · " + esc(branchName(S.profile.branch_id)) : ""}</small></div></div>
           <button class="btn btn-ghost btn-sm" id="lo" title="خروج">${icon("logout", 18)}</button>
@@ -429,7 +471,7 @@
       ${S.profiles.map((p) => { const rs = S.allRoles.filter((r) => r.user_id === p.id).map((r) => r.role); return `<tr><td><b>${esc(p.full_name)}</b>${rs.length ? "" : ' <span class="badge b-yellow">بانتظار التفعيل</span>'}</td><td dir="ltr" style="text-align:right">${esc(p.email)}</td>
         <td>${admin ? `<select class="input" data-branch="${p.id}" style="min-width:130px"><option value="">—</option>${S.branches.map((b) => `<option value="${b.id}" ${p.branch_id === b.id ? "selected" : ""}>${esc(b.name)}</option>`).join("")}</select>` : esc(branchName(p.branch_id))}</td>
         ${Object.keys(ROLE_LABEL).map((r) => `<td style="text-align:center"><input type="checkbox" class="check" style="accent-color:var(--brand);width:18px;height:18px" data-role="${r}" data-uid="${p.id}" ${rs.includes(r) ? "checked" : ""} ${admin && !(p.id === S.user.id && r === "admin") ? "" : "disabled"}></td>`).join("")}</tr>`; }).join("")}
-      </tbody></table></div><p style="font-size:13px;color:var(--muted);margin-top:12px">الموظف الجديد ينشئ حسابه من شاشة الدخول ← "حساب جديد"، ثم يظهر هنا لتفعيله. أول حساب في النظام يصبح مدير النظام تلقائياً.</p></div>
+      </tbody></table></div><p style="font-size:13px;color:var(--muted);margin-top:12px">الموظف الجديد ينشئ حسابه من شاشة الدخول ← "حساب جديد"، ثم يظهر هنا لتفعيله. لا يحصل أي حساب على صلاحية تلقائياً.</p></div>
       ${admin ? `<div class="card mt"><div class="card-head"><h3>الفروع / المعارض</h3><button class="btn btn-ghost btn-sm" data-act="new-branch">${icon("plus", 16)} فرع جديد</button></div><div class="tbl-wrap"><table><thead><tr><th>الفرع</th><th>المدينة</th><th>العملاء</th><th>الطلبات</th></tr></thead><tbody>${S.branches.map((b) => `<tr><td>${esc(b.name)}</td><td>${esc(b.city)}</td><td>${S.customers.filter((c) => c.branch_id === b.id).length}</td><td>${S.orders.filter((o) => o.branch_id === b.id).length}</td></tr>`).join("")}</tbody></table></div></div>` : ""}`;
   }
 
@@ -558,7 +600,52 @@
   }
 
   // ---------- actions ----------
-  async function refresh() { await loadAll(); render(true); }
+  let epoch = 0, activeRead = null, ready = false;
+  const accessScope = () => JSON.stringify([S.user?.id, S.profile?.branch_id, [...S.roles].sort()]);
+  function clearSnapshot() {
+    for (const k of ["branches", "customers", "orders", "documents", "profiles", "allRoles", "audit"]) S[k] = [];
+    X("clearSnapshot"); closeModal(); ready = false;
+  }
+  async function readOnce(ticket, recheckRoles) {
+    let title = "تعذّر تحميل صلاحيات الحساب";
+    try {
+      if (recheckRoles || !ready) {
+        const previous = accessScope(), access = await readRoles(S.user.id);
+        if (epoch !== ticket) return;
+        Object.assign(S, access);
+        if (previous !== accessScope()) { clearSnapshot(); app.innerHTML = '<div class="boot"><div class="spinner"></div></div>'; }
+      }
+      title = "لم يكتمل تحميل البيانات";
+      if (S.roles.length) {
+        const commit = await readSnapshot(ticket);
+        if (epoch !== ticket) return;
+        commit();
+      }
+      try { subscribeRealtime(accessScope()); } catch { subscribedScope = null; setLive(""); }
+      ready = true; render(true);
+    } catch (e) {
+      if (epoch !== ticket) return;
+      ready = false; closeModal();
+      bootMessage(title, errMsg(e, "read") + " لم نعرض نتائج ناقصة. أعد المحاولة لتحميل البيانات فقط.", () => refresh(true));
+    }
+  }
+  // Coalesce concurrent polling, Realtime and manual refreshes without losing
+  // a role change or letting an older read overwrite a newer session.
+  function refresh(recheckRoles = false) {
+    if (!S.user) return Promise.resolve();
+    if (activeRead) { activeRead.again = true; activeRead.roles ||= recheckRoles; return activeRead.promise; }
+    const job = activeRead = { roles: recheckRoles, again: false };
+    const ticket = epoch;
+    job.promise = (async () => {
+      try {
+        do {
+          const roles = job.roles; job.roles = false; job.again = false;
+          await readOnce(ticket, roles);
+        } while (ticket === epoch && job.again);
+      } finally { if (activeRead === job) activeRead = null; }
+    })();
+    return job.promise;
+  }
 
   async function handleAction(el) {
     const a = el.dataset.act;
@@ -607,7 +694,7 @@
   }
 
   function render(keepScroll) {
-    if (!S.user) return;
+    if (!S.user || !ready) return;
     if (!S.roles.length) return renderPending();
     const y = window.scrollY;
     const [r, id] = S.route.split("/");
@@ -631,6 +718,8 @@
     if (keepScroll) window.scrollTo(0, y); else window.scrollTo(0, 0);
   }
 
+  // Retry a blocked read when the network returns; never resubmit a form.
+  window.addEventListener("online", () => $("#hm-retry")?.click());
   window.addEventListener("hashchange", () => {
     const h = location.hash.replace(/^#\/?/, "");
     if (h === "reset-password") return renderResetPassword();
@@ -638,28 +727,46 @@
     render(false);
   });
 
-  async function boot() {
-    const { data } = await sb.auth.getSession();
-    S.session = data.session;
-    if (location.hash.includes("type=recovery") || location.hash === "#/reset-password") { if (S.session) return renderResetPassword(); }
-    if (!S.session) return renderAuth("in");
-    const u = await sb.auth.getUser();
-    if (u.error || !u.data.user) { await sb.auth.signOut(); return renderAuth("in"); }
-    S.user = u.data.user;
-    S.route = location.hash.replace(/^#\/?/, "");
-    await loadRoles(); await loadAll(); subscribeRealtime(); render(false);
+  async function boot(ticket = epoch) {
+    try {
+      const session = net.checked(await sb.auth.getSession()).data.session;
+      if (ticket !== epoch) return;
+      S.session = session;
+      if (!session) return renderAuth("in");
+      if (location.hash.includes("type=recovery") || location.hash === "#/reset-password") return renderResetPassword();
+      const result = await sb.auth.getUser();
+      if (ticket !== epoch) return;
+      // A network outage, wrong API key or 5xx is not a reason to revoke the
+      // employee's sessions. Only discard a definitively invalid local session.
+      if (["bad_jwt", "session_not_found", "user_not_found", "refresh_token_not_found"].includes(result.error?.code)) {
+        const out = await sb.auth.signOut({ scope: "local" });
+        if (ticket === epoch) { net.checked(out); renderAuth("in"); }
+        return;
+      }
+      S.user = net.checked(result).data.user;
+      if (!S.user) return renderAuth("in");
+      S.route = location.hash.replace(/^#\/?/, "");
+      await refresh(true);
+    } catch (e) {
+      if (ticket === epoch) bootMessage("تعذّر التحقق من الجلسة الآن", errMsg(e, "read"), () => boot(ticket));
+    }
   }
 
   // تمرير الأدوات المشتركة للإضافات (المرحلة الثانية)
-  X("init", { sb, S, $, app, esc, money, d, has, isMgr, canSell, branchName, cityOf, cust, badge, dbadge, paidFor, toast, errMsg, modal, closeModal, formData, refresh, render, ordersTable, docsTable, STATUS, DOC, DOC_STATUS, ROLE_LABEL, icon: window.icon, logoSVG: window.logoSVG });
+  X("init", { net, sb, S, $, app, esc, money, d, has, isMgr, canSell, branchName, cityOf, cust, badge, dbadge, paidFor, toast, errMsg, modal, closeModal, formData, refresh, render, ordersTable, docsTable, STATUS, DOC, DOC_STATUS, ROLE_LABEL, icon: window.icon, logoSVG: window.logoSVG });
 
   let lastUid = undefined;
   sb.auth.onAuthStateChange((ev, session) => {
-    if (ev === "PASSWORD_RECOVERY") return renderResetPassword();
-    const uid = session && session.user.id;
-    if (uid === lastUid && ev !== "SIGNED_OUT") return;
+    const uid = session?.user.id ?? null;
+    if (uid === lastUid && ev !== "SIGNED_OUT" && ev !== "PASSWORD_RECOVERY") return;
     lastUid = uid;
-    if (!session) { S.user = null; S.roles = []; if (S.channel) sb.removeChannel(S.channel); return renderAuth("in"); }
-    setTimeout(boot, 0);
+    const ticket = ++epoch;
+    clearTimeout(reloadTimer); activeRead = null;
+    if (S.channel) sb.removeChannel(S.channel);
+    S.channel = null; live = false; S.session = session; S.user = null; S.roles = []; S.profile = null; clearSnapshot();
+    if (ev === "PASSWORD_RECOVERY") return renderResetPassword();
+    if (!session) return renderAuth("in");
+    app.innerHTML = '<div class="boot"><div class="spinner"></div></div>';
+    setTimeout(() => { if (ticket === epoch) boot(ticket); }, 0);
   });
 })();

@@ -4,7 +4,8 @@
    ملف إضافي عبر window.HM_EXT — لا يعدّل أي ميزة أو ملف قائم. يعمل على نفس قاعدة البيانات (config.js). */
 (function () {
   let C = null;
-  const T3 = { fin: [], emps: [], leaves: [], policies: [], ann: [], camps: [], products: [], sorders: [], coupons: [], inv: [], missing: false, ff: {}, mseg: {}, sel: {} };
+  const emptyState = () => ({ fin: [], emps: [], leaves: [], policies: [], ann: [], camps: [], products: [], sorders: [], coupons: [], inv: [], missing: false, ff: {}, mseg: {}, sel: {} });
+  const T3 = emptyState();
   const TABLES = ["fin_entries", "hr_employees", "hr_leaves", "hr_policies", "announcements", "mkt_campaigns", "store_products", "store_orders", "coupons"];
   const AR = { fin_entries: "القيود المالية", hr_employees: "ملفات الموظفين", hr_leaves: "طلبات الإجازة", hr_policies: "السياسات الداخلية", announcements: "الإعلانات الداخلية", mkt_campaigns: "حملات التسويق", store_products: "منتجات المتجر", store_orders: "طلبات المتجر", coupons: "الكوبونات" };
   const sb = () => C.sb;
@@ -27,7 +28,7 @@
   const waNum = (p) => { let s = String(p || "").replace(/\D/g, ""); if (s.startsWith("00")) s = s.slice(2); if (s.startsWith("0")) s = "966" + s.slice(1); else if (s.length === 9 && s.startsWith("5")) s = "966" + s; return s; };
   const waLink = (p, text) => `https://wa.me/${waNum(p)}?text=${encodeURIComponent(text)}`;
   const noAccess = () => '<div class="empty">لا تملك صلاحية لهذه الصفحة</div>';
-  const missingNote = () => "";
+  const missingNote = () => T3.missing ? '<p class="p2-warn" role="alert">مخطط البيانات غير مكتمل في مشروع Supabase؛ تحقّق من تثبيت جداول هذا القسم.</p>' : "";
   async function run(p, okMsg) { const r = await p; if (r.error) { C.toast(C.errMsg(r.error), "err"); return null; } if (okMsg) C.toast(okMsg, "ok"); return r.data === null ? true : r.data; }
   const done = async (msg) => { if (msg) C.toast(msg, "ok"); C.closeModal(); await C.refresh(); };
   const staffName = (id) => { const p = C.S.profiles.find((x) => x.id === id); return (p && (p.full_name || p.email)) || "—"; };
@@ -84,8 +85,11 @@
       sb().from("coupons").select("*").order("created_at", { ascending: false }),
       sb().from("inventory_items").select("id,name,unit,qty_on_hand,category"),
     ]);
-    T3.missing = q.slice(0, 9).some((r) => r.error && /does not exist|schema cache|42P01|PGRST205/i.test((r.error.message || "") + (r.error.code || "")));
-    [T3.fin, T3.emps, T3.leaves, T3.policies, T3.ann, T3.camps, T3.products, T3.sorders, T3.coupons, T3.inv] = q.map((r) => (r.error ? [] : r.data || []));
+    const lists = q.map(r => C.net.rows(r, true));
+    return () => {
+      T3.missing = q.some(C.net.missing);
+      [T3.fin, T3.emps, T3.leaves, T3.policies, T3.ann, T3.camps, T3.products, T3.sorders, T3.coupons, T3.inv] = lists;
+    };
   }
 
   // ---------------------------------------------------------------- nav / hooks
@@ -439,7 +443,9 @@
     if (c && c.valid) { const elig = lines.filter((l) => c.scope === "all" || (c.scope === "product" && c.product_id === l.p.id) || (c.scope === "category" && c.category === l.p.category)).reduce((a, l) => a + l.q * Number(l.p.price), 0); disc = c.discount_type === "percent" ? Math.round(elig * Number(c.discount_value)) / 100 : Math.min(Number(c.discount_value), elig); }
     return { lines, sub, disc, total: sub - disc };
   }
+  const readProblem = msg => `<div class="empty" role="alert">${esc(msg)} <button type="button" class="btn btn-line" data-p3-retry>إعادة المحاولة</button></div>`;
   function shopInner() {
+    if (SH.products == null && SH.err) return readProblem(SH.err);
     if (SH.products == null) return '<div class="boot" style="height:300px"><div class="spinner"></div></div>';
     if (SH.done) return `<div class="p3-coupon"><div class="hd">${ic("check", 40)}<h2>تم استلام طلبك رقم #${SH.done.order_no}</h2></div><div class="bd"><p>الإجمالي: <b>${money(SH.done.subtotal)}</b> ر.س · الخصم: <b>${money(SH.done.discount)}</b> · الصافي: <b>${money(SH.done.total)} ر.س</b></p><p>سيتواصل معك فريق هوم ماربل لتأكيد الطلب والتوصيل.</p>${SH.coupon && SH.coupon.whatsapp_number ? `<a class="btn btn-success btn-block" target="_blank" rel="noopener" href="${waLink(SH.coupon.whatsapp_number, `مرحباً، قمت بطلب رقم #${SH.done.order_no} من متجر هوم ماربل باستخدام الكوبون ${SH.coupon.code}`)}">${ic("chat", 18)} متابعة الطلب عبر واتساب</a>` : ""}<button class="btn btn-ghost btn-block" data-p3-shop="again">متابعة التسوق</button></div></div>`;
     const cats = [...new Set(SH.products.map((p) => p.category))];
@@ -449,26 +455,39 @@
       <div class="p3-grid">${list.map((p) => { const out = p.linked && Number(p.available) <= 0; return `<div class="p3-prod"><div class="im" style="${p.image_url ? `background-image:url('${esc(p.image_url)}')` : ""}">${p.image_url ? "" : ic("layers", 44)}</div><div class="bd"><b>${esc(p.name)}</b><span class="badge b-gray" style="align-self:flex-start">${esc(p.category)}</span>${p.description ? `<small class="p2-muted">${esc(p.description)}</small>` : ""}<div class="pr">${money(p.price)} ر.س / ${esc(p.unit)}</div><small>${p.linked ? (out ? '<span style="color:var(--red)">غير متوفر حالياً</span>' : `متوفر: ${Number(p.available)}`) : "متوفر عند الطلب"}</small><button class="btn btn-primary btn-sm" data-p3-add="${p.id}" ${out ? "disabled" : ""}>${ic("cart", 16)} أضف للسلة</button></div></div>`; }).join("") || '<div class="empty">لا توجد منتجات</div>'}</div></div>
       <div class="card p3-cart"><div class="card-head"><h3>${ic("cart")} سلة المشتريات</h3></div>
         ${k.lines.map((l) => `<div class="p3-line"><span>${esc(l.p.name)}</span><span style="display:flex;gap:4px;align-items:center"><button class="btn btn-sm btn-line" data-p3-q="${l.p.id}" data-d="-1">−</button>${l.q}<button class="btn btn-sm btn-line" data-p3-q="${l.p.id}" data-d="1">+</button></span><b>${money(l.q * l.p.price)}</b></div>`).join("") || '<div class="empty">السلة فارغة</div>'}
-        <div class="field mt"><label>كوبون الخصم</label><div style="display:flex;gap:6px"><input class="input" id="p3-cpin" dir="ltr" value="${esc(SH.couponCode)}" style="text-transform:uppercase"><button class="btn btn-ghost" data-p3-shop="coupon">تطبيق</button></div>${c ? (c.valid ? `<small style="color:var(--green)">✓ ${esc(c.code)}: خصم ${esc(discTxt(c))} على ${esc(scopeTxt(c))}</small>` : '<small style="color:var(--red)">الكوبون غير صالح أو منتهي</small>') : ""}</div>
+        <div class="field mt"><label>كوبون الخصم</label><div style="display:flex;gap:6px"><input class="input" id="p3-cpin" dir="ltr" value="${esc(SH.couponCode)}" style="text-transform:uppercase"><button class="btn btn-ghost" data-p3-shop="coupon">تطبيق</button></div>${SH.couponError ? `<small role="alert">${esc(SH.couponError)}</small>` : c ? (c.valid ? `<small style="color:var(--green)">✓ ${esc(c.code)}: خصم ${esc(discTxt(c))} على ${esc(scopeTxt(c))}</small>` : '<small style="color:var(--red)">الكوبون غير صالح أو منتهي</small>') : ""}</div>
         <div class="p3-line"><span>الإجمالي</span><b>${money(k.sub)}</b></div>${k.disc ? `<div class="p3-line" style="color:var(--green)"><span>الخصم</span><b>− ${money(k.disc)}</b></div>` : ""}<div class="p3-line" style="font-size:17px"><span>الصافي</span><b>${money(k.total)} ر.س</b></div>
         ${k.lines.length ? `<form id="p3-co" class="mt"><div class="field"><label>الاسم *</label><input class="input" name="name" required></div><div class="field"><label>الجوال *</label><input class="input" name="phone" required dir="ltr"></div><div class="field"><label>البريد</label><input class="input" name="email" type="email" dir="ltr"></div><div class="field"><label>المدينة</label><input class="input" name="city"></div><div class="field"><label>العنوان</label><input class="input" name="address"></div><div class="field"><label>ملاحظات</label><textarea class="input" name="notes"></textarea></div><button class="btn btn-primary btn-block">${ic("check", 18)} تأكيد الطلب</button></form>` : ""}</div></div>`;
   }
   function shopPage(code) { if (code && !SH.couponCode) { SH.couponCode = code.toUpperCase(); SH.pendingCoupon = true; } return `<div id="p3-shopbox">${shopInner()}</div>`; }
   async function shopEnsure() {
-    if (SH.products == null) { const r = await sb().rpc("hm_store_catalog"); SH.products = r.error ? [] : r.data || []; if (r.error) console.error(r.error); }
+    if (SH.products == null) {
+      try { SH.products = C.net.rows(await sb().rpc("hm_store_catalog", {}, { get: true })); SH.err = ""; }
+      catch (e) { SH.err = C.errMsg(e); shopRefresh(); return; }
+    }
     if (SH.pendingCoupon) { SH.pendingCoupon = false; await applyCoupon(SH.couponCode, true); }
     shopRefresh();
   }
-  async function applyCoupon(code, silent) { if (!code) { SH.coupon = null; return; } const r = await sb().rpc("hm_coupon_public", { _code: code }); SH.coupon = r.data && r.data.found ? r.data : { valid: false }; if (!silent && SH.coupon.valid) C.toast("تم تطبيق الكوبون", "ok"); }
+  async function applyCoupon(code, silent) {
+    SH.couponError = ""; SH.coupon = null;
+    if (!code) return;
+    try {
+      const r = C.net.checked(await sb().rpc("hm_coupon_public", { _code: code }));
+      SH.coupon = r.data?.found ? r.data : { valid: false };
+      if (!silent && SH.coupon.valid) C.toast("تم تطبيق الكوبون", "ok");
+    } catch (e) { SH.couponError = "تعذّر التحقق من الكوبون. " + C.errMsg(e); }
+  }
   function shopRefresh() { const b = document.getElementById("p3-shopbox"); if (!b) return; b.innerHTML = shopInner(); shopBind(b); }
   function shopBind(b) {
+    const retry = b.querySelector("[data-p3-retry]"); if (retry) retry.onclick = () => { retry.disabled = true; shopEnsure(); };
     b.querySelectorAll("[data-p3-cat]").forEach((x) => (x.onclick = () => { SH.cat = x.dataset.p3Cat; shopRefresh(); }));
     b.querySelectorAll("[data-p3-add]").forEach((x) => (x.onclick = () => { SH.cart[x.dataset.p3Add] = (SH.cart[x.dataset.p3Add] || 0) + 1; saveCart(); shopRefresh(); }));
     b.querySelectorAll("[data-p3-q]").forEach((x) => (x.onclick = () => { const id = x.dataset.p3Q; SH.cart[id] = (SH.cart[id] || 0) + Number(x.dataset.d); if (SH.cart[id] <= 0) delete SH.cart[id]; saveCart(); shopRefresh(); }));
     const cb = b.querySelector('[data-p3-shop="coupon"]'); if (cb) cb.onclick = async () => { SH.couponCode = (b.querySelector("#p3-cpin").value || "").trim().toUpperCase(); await applyCoupon(SH.couponCode); shopRefresh(); };
     const ag = b.querySelector('[data-p3-shop="again"]'); if (ag) ag.onclick = () => { SH.done = null; SH.products = null; shopEnsure(); };
     const co = b.querySelector("#p3-co"); if (co) co.onsubmit = async (e) => {
-      e.preventDefault(); const v = C.formData(co); const btn = co.querySelector("button"); btn.disabled = true;
+      e.preventDefault(); if (SH.couponError) return C.toast("أعد تطبيق الكوبون، أو امسح الكود واضغط تطبيق للمتابعة بدونه.", "err");
+      const v = C.formData(co); const btn = co.querySelector("button"); btn.disabled = true;
       const items = Object.keys(SH.cart).map((id) => ({ id, qty: SH.cart[id] }));
       const r = await sb().rpc("hm_store_place_order", { _name: v.name, _phone: v.phone, _email: v.email || null, _city: v.city || null, _address: v.address || null, _notes: v.notes || null, _items: items, _coupon: SH.coupon && SH.coupon.valid ? SH.coupon.code : null });
       if (r.error) { btn.disabled = false; return C.toast(C.errMsg(r.error), "err"); }
@@ -478,7 +497,12 @@
   function couponPage(code) { return `<div id="p3-cpbox" data-code="${esc(code || "")}"><div class="boot" style="height:300px"><div class="spinner"></div></div></div>`; }
   async function couponFill() {
     const b = document.getElementById("p3-cpbox"); if (!b) return; const code = b.dataset.code;
-    const r = await sb().rpc("hm_coupon_public", { _code: code }); const c = r.data || {};
+    let c;
+    try { c = C.net.checked(await sb().rpc("hm_coupon_public", { _code: code })).data || {}; }
+    catch (e) {
+      b.innerHTML = readProblem(C.errMsg(e));
+      const btn = b.querySelector("[data-p3-retry]"); btn.onclick = () => { btn.disabled = true; couponFill(); }; return;
+    }
     if (!c.found) { b.innerHTML = `<div class="p3-coupon"><div class="hd"><h2>الكوبون غير موجود</h2></div><div class="bd"><a class="btn btn-primary" href="#/shop">تصفح المتجر</a></div></div>`; return; }
     const claim = `مرحباً هوم ماربل 🌷\nأرغب في الاستفادة من كوبون الخصم ${c.code} (${discTxt(c)} على ${scopeTxt(c)}).`;
     const wa = c.whatsapp_number ? waLink(c.whatsapp_number, claim) : null;
@@ -516,7 +540,7 @@
       ["المتجر الإلكتروني", ["أضف المنتجات واربطها بأصناف المخزون ليظهر المتاح فعلياً للزوار.", "طلبات الزوار تظهر في «المتجر الإلكتروني» مع تنبيه، ويمكن تحويلها لعميل وطلب بضغطة.", "انسخ رابط المتجر أو رابط الكوبون وشاركه مع العملاء."]],
       ["كل الموظفين", ["«بوابة الموظف»: ملفك وطلبات إجازتك والسياسات والإعلانات.", "في أي جدول: علّم مربع الاختيار لتحديد عنصر أو «تحديد الكل» ثم «حذف المحدد» (حسب صلاحيتك)، وكل المحذوفات تُحفظ في سلة المحذوفات.", "زر «حفظ التقرير» أعلى كل صفحة للتصدير إلى Excel أو PDF."]],
     ];
-    const CHECK = ["تشغيل ملفات قاعدة البيانات 0001 و0002 و0003 بالترتيب", "تسليم كل موظف بريده وكلمة مروره (ملف الحسابات) وتغييرها بعد الاستلام", "تفعيل وظيفة كل موظف جديد من «المستخدمون والصلاحيات»", "إضافة منتجات المتجر وربطها بالمخزون ونشر رابط المتجر", "تجربة دورة كاملة: عميل ← طلب ← مصنع ← جودة ← تركيب ← تحصيل", "أخذ نسخة احتياطية كاملة من «التقارير والنسخ الاحتياطي»"];
+    const CHECK = ["عند التثبيت الجديد: تشغيل ملفات قاعدة البيانات من 0000 إلى 0004 بالترتيب", "تسليم كل موظف بريده وكلمة مروره (ملف الحسابات) وتغييرها بعد الاستلام", "تفعيل وظيفة كل موظف جديد من «المستخدمون والصلاحيات»", "إضافة منتجات المتجر وربطها بالمخزون ونشر رابط المتجر", "تجربة دورة كاملة: عميل ← طلب ← مصنع ← جودة ← تركيب ← تحصيل", "أخذ نسخة احتياطية كاملة من «التقارير والنسخ الاحتياطي»"];
     return `<div class="page-head"><div><h1>دليل الاستخدام والتدريب والتسليم</h1><div class="sub">شرح مختصر لكل قسم وقائمة التسليم النهائي</div></div><div class="filters"><button class="btn btn-ghost" onclick="window.print()">${ic("print", 18)} طباعة</button></div></div>
       <div class="grid g2">${G.map((g) => `<div class="card p3-guide"><h4>${esc(g[0])}</h4><ul>${g[1].map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>`).join("")}<div class="card p3-guide"><h4>قائمة التسليم النهائي</h4><ul>${CHECK.map((x) => `<li>☐ ${esc(x)}</li>`).join("")}</ul></div></div>`;
   }
@@ -664,6 +688,7 @@
   window.HM_EXT = window.HM_EXT || [];
   window.HM_EXT.push({
     init(ctx) { C = ctx; css(); },
+    clearSnapshot() { Object.assign(T3, emptyState()); },
     load,
     realtimeTables: () => (T3.missing ? [] : TABLES),
     nav, alerts, search, dashboard, orderSection, docSection, customerSection, authRendered, action, bind,

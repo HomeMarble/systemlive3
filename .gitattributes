@@ -1,0 +1,2 @@
+# Keep the upstream browser distribution byte-for-byte (including whitespace).
+js/vendor/supabase-*.js -text -diff linguist-vendored

@@ -1,9 +1,10 @@
 /* هوم ماربل — الإضافات: الدعم الفني • نسيت كلمة المرور عبر الدعم • دردشة الزوار • الدردشات بالكود
    استيراد العملاء من Excel • حفظ وتصدير واستعادة التقارير • النسخ الاحتياطي • سلة المحذوفات
-   يعمل على نفس قاعدة بيانات Lovable Cloud الأصلية (config.js) — ملف إضافي عبر window.HM_EXT دون تعديل أي ميزة قائمة. */
+   يعمل على مشروع Supabase المحدد في (config.js) — ملف إضافي عبر window.HM_EXT دون تعديل أي ميزة قائمة. */
 (function () {
   let C = null;
-  const E = { reqs: [], threads: [], rooms: [], members: [], deleted: [], reports: [], msgs: {}, room: {}, repCache: {}, localReport: null, missing: false, f: {}, drafts: {} };
+  const emptyState = () => ({ reqs: [], threads: [], rooms: [], members: [], deleted: [], reports: [], msgs: {}, room: {}, repCache: {}, localReport: null, missing: false, f: {}, drafts: {}, _importHandle: null });
+  const E = emptyState();
   const P1_ROLES = ["admin", "executive", "sales", "factory_manager", "accountant"];
   const P2_ROLES = ["purchasing", "warehouse", "cutting_supervisor", "assembly_supervisor", "polishing_supervisor", "quality_inspector", "measurement_tech", "installer"];
   const THREAD_COLS = "id,thread_no,visitor_name,visitor_contact,subject,status,assigned_to,last_message_at,last_sender,staff_unread,visitor_unread,created_at";
@@ -38,14 +39,14 @@
   const field = (label, html, cls) => `<div class="field ${cls || ""}"><label>${label}</label>${html}</div>`;
   const noAccess = () => '<div class="empty">لا تملك صلاحية الوصول لهذه الصفحة</div>';
   const kpi = (lbl, val, unit, icn, foot) => `<div class="card"><div class="kpi"><div><div class="lbl">${lbl}</div><div class="val">${val}</div><div class="unit">${unit || ""}</div></div><div class="ico">${ic(icn, 26)}</div></div>${foot ? `<div class="kpi-foot">${foot}</div>` : ""}</div>`;
-  const missingBanner = () => "";
+  const missingBanner = () => E.missing ? '<p class="p2-warn" role="alert">بعض جداول الإضافات غير مثبتة في مشروع Supabase؛ بيانات هذا القسم غير مكتملة.</p>' : "";
   const stamp = () => { const d = new Date(); const p = (n) => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}`; };
   const normDigits = (s) => String(s == null ? "" : s).replace(/[٠-٩]/g, (x) => x.charCodeAt(0) - 1632).replace(/[۰-۹]/g, (x) => x.charCodeAt(0) - 1776);
   const normPhone = (s) => { let p = normDigits(s).replace(/[\s\-().]/g, ""); if (/^5\d{8}$/.test(p)) p = "0" + p; return p; };
   const normTxt = (s) => normDigits(s).toLowerCase().replace(/ـ/g, "").replace(/[أإآ]/g, "ا").replace(/ى/g, "ي").replace(/ة/g, "ه").replace(/\s+/g, " ").trim();
   const staffName = (id) => { const p = ((C && C.S.profiles) || []).find((x) => x.id === id); return (p && (p.full_name || p.email)) || "الدعم الفني"; };
-  const isMissingErr = (r) => !!(r && r.error && /does not exist|schema cache|Could not find|relation/i.test(r.error.message || ""));
-  const errText = (e) => (e && (e.message || e.error_description)) || "حدث خطأ غير متوقع";
+  const isMissingErr = r => C.net.missing(r);
+  const errText = e => C.errMsg(e);
   const sb = () => C.sb;
   const toast = (m, t) => C.toast(m, t);
 
@@ -771,20 +772,36 @@
     const total = res.inserts.length + res.updates.length; let done = 0, failed = 0; const errs = [];
     const step = () => { bar.style.width = Math.round((done / Math.max(1, total)) * 100) + "%"; lbl.textContent = `${num(done)} / ${num(total)}`; };
     step();
+    ov.querySelectorAll("select").forEach(el => { el.disabled = true; });
     const uid = C.S.user.id;
-    for (let i = 0; i < res.inserts.length; i += 200) {
-      const chunk = res.inserts.slice(i, i + 200).map((r) => Object.assign({}, r, { created_by: uid }));
-      const r = await sb().from("customers").insert(chunk);
+    // A lost response does not mean an INSERT rolled back. Only fall back to
+    // individual rows after Postgres explicitly rejected a validation/constraint.
+    const rowRejected = r => r.status >= 400 && r.status < 500 && /^2[23][0-9A-Z]{3}$/.test(r.error?.code);
+    const record = r => {
       if (r.error) {
-        for (const one of chunk) { const x = await sb().from("customers").insert(one); if (x.error) { failed++; if (errs.length < 5) errs.push(`${one.name}: ${errText(x.error)}`); } done++; }
-      } else done += chunk.length;
-      step();
-    }
-    for (const u of res.updates) {
-      const id = u.id; const row = Object.assign({}, u); delete row.id;
-      const r = await sb().from("customers").update(row).eq("id", id);
-      if (r.error) { failed++; if (errs.length < 5) errs.push(errText(r.error)); }
-      done++; if (done % 25 === 0) step();
+        if (!rowRejected(r)) C.net.checked(r);
+        failed++; if (errs.length < 5) errs.push(errText(r.error));
+      }
+      done++;
+    };
+    try {
+      for (let i = 0; i < res.inserts.length; i += 200) {
+        const chunk = res.inserts.slice(i, i + 200).map(r => ({ ...r, created_by: uid }));
+        const r = await sb().from("customers").insert(chunk);
+        if (rowRejected(r)) {
+          for (const one of chunk) record(await sb().from("customers").insert(one));
+        } else { C.net.checked(r); done += chunk.length; }
+        step();
+      }
+      for (const u of res.updates) {
+        const { id, ...row } = u;
+        record(await sb().from("customers").update(row).eq("id", id));
+        if (done % 25 === 0) step();
+      }
+    } catch (er) {
+      C.closeModal();
+      toast(`توقّف الاستيراد. تأكّد حفظ ${num(done - failed)} من ${num(total)}. لم نكرر الطلب الأخير؛ راجع قائمة العملاء قبل استئنافه. ${errText(er)}`, "err");
+      await C.refresh(); return;
     }
     step();
     C.closeModal();
@@ -892,9 +909,14 @@
     if (!isStaff()) return noAccess();
     const rep = id === "local" ? E.localReport : E.repCache[id];
     if (!rep) {
-      if (id !== "local" && !E.repCache["loading:" + id]) {
-        E.repCache["loading:" + id] = true;
-        sb().from("saved_reports").select("*").eq("id", id).maybeSingle().then((r) => { E.repCache[id] = r.data ? r.data.payload : { title: "التقرير غير موجود", tables: [], kpis: [] }; if (route()[1] === id) C.render(true); });
+      const cache = E.repCache;
+      if (cache["problem:" + id]) return `<div class="empty" role="alert">${esc(cache["problem:" + id])} <button class="btn btn-line" data-act="ex-report-retry" data-id="${esc(id)}">إعادة محاولة تحميل التقرير</button></div>`;
+      if (id !== "local" && !cache["loading:" + id]) {
+        cache["loading:" + id] = true;
+        reportById(id).catch(e => { cache["problem:" + id] = errText(e); }).finally(() => {
+          delete cache["loading:" + id];
+          if (E.repCache === cache && route()[0] === "report-view" && route()[1] === id) C.render(true);
+        });
       }
       return id === "local" ? '<div class="empty">افتح ملف تقرير (.hmr) من <a href="#/reports">أرشيف التقارير</a></div>' : '<div class="empty">جاري تحميل التقرير...</div>';
     }
@@ -1013,10 +1035,11 @@
 
   async function reportById(id) {
     if (id === "local") return E.localReport;
-    if (E.repCache[id]) return E.repCache[id];
+    const cache = E.repCache;
+    if (cache[id]) return cache[id];
     const r = await sb().from("saved_reports").select("*").eq("id", id).maybeSingle();
     if (r.error || !r.data) throw r.error || new Error("التقرير غير موجود");
-    E.repCache[id] = r.data.payload; return r.data.payload;
+    cache[id] = r.data.payload; return r.data.payload;
   }
 
   // =====================================================================
@@ -1131,6 +1154,7 @@
       case "ex-rep-excel": await exportExcel(await reportById(id)); return toast("تم تصدير ملف Excel ✓", "ok");
       case "ex-rep-hmr": exportHMR(await reportById(id)); return toast("تم حفظ ملف التقرير ✓", "ok");
       case "ex-rep-print": return printReport(await reportById(id));
+      case "ex-report-retry": delete E.repCache["problem:" + id]; C.render(true); return;
       case "ex-rep-del": { if (!confirm("حذف التقرير من الأرشيف؟ (يُحفظ في سلة المحذوفات)")) return; const r = await run(sb().from("saved_reports").delete().eq("id", id), "تم الحذف"); if (r) await C.refresh(); return; }
       case "ex-bk-json": return makeBackup("json");
       case "ex-bk-excel": return makeBackup("excel");
@@ -1226,38 +1250,39 @@
 
   // ---------- تحميل البيانات ----------
   async function load() {
-    let miss = false;
-    const mark = (r) => { if (isMissingErr(r)) miss = true; return (r && r.data) || []; };
-    try {
-      const jobs = [];
-      if (isSupport()) {
-        jobs.push(sb().from("support_password_requests").select("*").order("created_at", { ascending: false }).limit(300).then((r) => { E.reqs = mark(r); }));
-        jobs.push(sb().from("support_threads").select(THREAD_COLS).order("last_message_at", { ascending: false }).limit(300).then((r) => { E.threads = mark(r); }));
-      }
-      if (isMgr()) {
-        jobs.push(sb().from("chat_rooms").select("*").order("created_at", { ascending: false }).limit(300).then((r) => { E.rooms = mark(r); }));
-        jobs.push(sb().from("chat_members").select(MEMBER_COLS).limit(5000).then((r) => { E.members = mark(r); }));
-        jobs.push(sb().from("deleted_records").select("*").order("deleted_at", { ascending: false }).limit(500).then((r) => { E.deleted = mark(r); }));
-      }
-      if (isStaff()) jobs.push(sb().from("saved_reports").select("id,title,route,created_by,created_at").order("created_at", { ascending: false }).limit(300).then((r) => { E.reports = mark(r); }));
-      await Promise.all(jobs);
-    } catch (er) { console.error("[extras] load", er); }
-    E.missing = miss;
+    const jobs = {};
+    if (isSupport()) {
+      jobs.reqs = sb().from("support_password_requests").select("*").order("created_at", { ascending: false }).limit(300);
+      jobs.threads = sb().from("support_threads").select(THREAD_COLS).order("last_message_at", { ascending: false }).limit(300);
+    }
+    if (isMgr()) {
+      jobs.rooms = sb().from("chat_rooms").select("*").order("created_at", { ascending: false }).limit(300);
+      jobs.members = sb().from("chat_members").select(MEMBER_COLS).limit(5000);
+      jobs.deleted = sb().from("deleted_records").select("*").order("deleted_at", { ascending: false }).limit(500);
+    }
+    if (isStaff()) jobs.reports = sb().from("saved_reports").select("id,title,route,created_by,created_at").order("created_at", { ascending: false }).limit(300);
+    const next = { reqs: [], threads: [], rooms: [], members: [], deleted: [], reports: [], missing: false };
+    await Promise.all(Object.entries(jobs).map(async ([name, query]) => {
+      const r = await query;
+      next[name] = C.net.rows(r, true); next.missing ||= isMissingErr(r);
+    }));
+    return () => Object.assign(E, next);
   }
 
   // مؤقت احتياطي: تحديث كل دقيقتين إن انقطع الاتصال اللحظي (لا يقاطع الكتابة أو النوافذ المفتوحة)
   function autoRefresh() {
-    if (!C || !C.S.user || !C.S.roles.length || document.hidden) return;
+    if (!C || !C.S.user || document.hidden) return;
     if (document.querySelector("#modal-root .overlay")) return;
     const a = document.activeElement;
     if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
-    C.refresh().catch(() => {});
+    C.refresh(true).catch(() => {});
   }
 
   window.HM_EXT = window.HM_EXT || [];
   window.HM_EXT.push({
     name: "extras",
     init(ctx) { C = ctx; C.ROLE_LABEL.support = "الدعم الفني"; setInterval(autoRefresh, 120000); },
+    clearSnapshot() { Object.assign(E, emptyState()); clearInterval(pageTimer); pageTimer = null; hideVisitorUI(); },
     load,
     realtimeTables: () => (E.missing || !isStaff() ? [] : (isSupport() ? ["support_password_requests", "support_messages"] : []).concat(isMgr() ? ["chat_rooms", "deleted_records"] : [], ["saved_reports"])),
     nav, alerts, search, home, dashboard, topbar, customersTools, authRendered, pendingRendered, action, bind,
