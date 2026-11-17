@@ -1,6 +1,6 @@
 /* هوم ماربل — الإضافات: الدعم الفني • نسيت كلمة المرور عبر الدعم • دردشة الزوار • الدردشات بالكود
    استيراد العملاء من Excel • حفظ وتصدير واستعادة التقارير • النسخ الاحتياطي • سلة المحذوفات
-   يعمل على نفس قاعدة بيانات Lovable Cloud الأصلية (config.js) — ملف إضافي عبر window.HM_EXT دون تعديل أي ميزة قائمة. */
+   يعمل على مشروع Supabase المحدد في (config.js) — ملف إضافي عبر window.HM_EXT دون تعديل أي ميزة قائمة. */
 (function () {
   let C = null;
   const E = { reqs: [], threads: [], rooms: [], members: [], deleted: [], reports: [], msgs: {}, room: {}, repCache: {}, localReport: null, missing: false, f: {}, drafts: {} };
@@ -1247,11 +1247,11 @@
 
   // مؤقت احتياطي: تحديث كل دقيقتين إن انقطع الاتصال اللحظي (لا يقاطع الكتابة أو النوافذ المفتوحة)
   function autoRefresh() {
-    if (!C || !C.S.user || !C.S.roles.length || document.hidden) return;
+    if (!C || !C.S.user || document.hidden) return;
     if (document.querySelector("#modal-root .overlay")) return;
     const a = document.activeElement;
     if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
-    C.refresh().catch(() => {});
+    C.refresh(true).catch(() => {});
   }
 
   window.HM_EXT = window.HM_EXT || [];

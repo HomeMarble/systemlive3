@@ -1,0 +1,13 @@
+# Local credentials, exports and release archives do not belong in the repository.
+.env
+.env.*
+backups/
+/roles.sql
+/schema.sql
+/data.sql
+.pgpass
+*.dump
+*.backup
+*.hmbak
+*.zip
+__pycache__/

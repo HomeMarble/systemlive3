@@ -1,0 +1,16 @@
+-- psql only. Same read-only inventory on source and destination, with writes
+-- paused. Compare the two outputs privately; never export password hashes here.
+\set ON_ERROR_STOP on
+\pset tuples_only on
+\pset format unaligned
+begin transaction isolation level repeatable read read only;
+select format('select %L, count(*) from %I.%I', schemaname || '.' || tablename, schemaname, tablename)
+from pg_tables where (schemaname = 'public' and tablename <> 'hm_preset_roles')
+                  or (schemaname = 'auth' and tablename in ('users', 'identities'))
+order by schemaname, tablename
+\gexec
+select u.id, lower(u.email), p.branch_id,
+       array(select ur.role::text from public.user_roles ur where ur.user_id = u.id order by 1)
+from auth.users u left join public.profiles p on p.id = u.id order by u.id;
+select bucket_id, name from storage.objects order by bucket_id, name collate "C";
+commit;

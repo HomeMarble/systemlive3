@@ -364,7 +364,7 @@ create policy "hm3_upd"  on public.coupons for update to authenticated using (pu
 create policy "hm3_del"  on public.coupons for delete to authenticated using (public.hm_is_mgr());
 
 -- ---------------------------------------------------------------------
--- 7) التحديث التلقائي + سجل العمليات + سلة المحذوفات + Realtime
+-- 7) التحديث التلقائي + سجل العمليات + سلة المحذوفات
 -- ---------------------------------------------------------------------
 do $$ declare t text; begin
   foreach t in array array['fin_entries','hr_employees','hr_leaves','hr_policies','store_products','store_orders','coupons'] loop
@@ -381,10 +381,6 @@ do $$ declare t text; begin
       execute format('drop trigger if exists trg_hm_keep_deleted on public.%I', t);
       execute format('create trigger trg_hm_keep_deleted before delete on public.%I for each row execute function public.hm_keep_deleted()', t);
     end if;
-    begin
-      execute format('alter publication supabase_realtime add table public.%I', t);
-    exception when others then null;
-    end;
   end loop;
 end $$;
 
@@ -399,86 +395,7 @@ returns text[] language sql immutable as $$
 $$;
 
 -- ---------------------------------------------------------------------
--- 8) حسابات الأدوار (المرحلة الثانية + الدعم الفني) — بنفس كلمات المرور في ملف HomeMarble_Accounts.pdf
---    تُنشأ مباشرة إن لم تكن موجودة، وإن سجّل الموظف بنفس البريد لاحقاً تُعيَّن له الوظيفة تلقائياً.
--- ---------------------------------------------------------------------
-create table if not exists public.hm_preset_roles (
-  email text not null,
-  role text not null,
-  full_name text,
-  primary key (email, role)
-);
-alter table public.hm_preset_roles enable row level security;
-revoke all on public.hm_preset_roles from anon, authenticated;
-grant all on public.hm_preset_roles to service_role;
-
-insert into public.hm_preset_roles (email, role, full_name) values
-  ('purchasing@homemarble.com',  'purchasing',           'المشتريات'),
-  ('warehouse@homemarble.com',   'warehouse',            'أمين المستودع'),
-  ('cutting@homemarble.com',     'cutting_supervisor',   'مشرف القص'),
-  ('assembly@homemarble.com',    'assembly_supervisor',  'مشرف التجميع'),
-  ('polishing@homemarble.com',   'polishing_supervisor', 'مشرف التلميع'),
-  ('quality@homemarble.com',     'quality_inspector',    'مراقب الجودة'),
-  ('measurement@homemarble.com', 'measurement_tech',     'فني القياسات'),
-  ('install@homemarble.com',     'installer',            'فريق التركيبات'),
-  ('support@homemarble.com',     'support',              'الدعم الفني')
-on conflict do nothing;
-
-create or replace function public.hm_apply_preset_roles()
-returns trigger language plpgsql security definer set search_path = public as $$
-declare r record;
-begin
-  for r in select role from public.hm_preset_roles where email = lower(new.email) loop
-    begin
-      execute 'insert into public.user_roles (user_id, role) values ($1, $2::public.app_role) on conflict do nothing' using new.id, r.role;
-    exception when others then null;
-    end;
-  end loop;
-  return new;
-end $$;
-drop trigger if exists on_auth_user_created_hm3 on auth.users;
-create trigger on_auth_user_created_hm3 after insert on auth.users for each row execute function public.hm_apply_preset_roles();
-
-do $$
-declare a record; uid uuid;
-  accs text[][] := array[
-    ['purchasing@homemarble.com',  'HM-Purch#2026p', 'المشتريات'],
-    ['warehouse@homemarble.com',   'HM-Store#2026h', 'أمين المستودع'],
-    ['cutting@homemarble.com',     'HM-Cut#2026c',   'مشرف القص'],
-    ['assembly@homemarble.com',    'HM-Assm#2026a',  'مشرف التجميع'],
-    ['polishing@homemarble.com',   'HM-Polish#2026l','مشرف التلميع'],
-    ['quality@homemarble.com',     'HM-Qc#2026v',    'مراقب الجودة'],
-    ['measurement@homemarble.com', 'HM-Meas#2026t',  'فني القياسات'],
-    ['install@homemarble.com',     'HM-Inst#2026n',  'فريق التركيبات'],
-    ['support@homemarble.com',     'HM-Support#2026s','الدعم الفني']];
-  i int;
-begin
-  perform set_config('search_path', 'public, extensions', true);
-  for i in 1..array_length(accs, 1) loop
-    begin
-      select id into uid from auth.users where lower(email) = accs[i][1];
-      if uid is null then
-        uid := gen_random_uuid();
-        insert into auth.users (instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
-                                raw_app_meta_data, raw_user_meta_data, created_at, updated_at,
-                                confirmation_token, email_change, email_change_token_new, recovery_token)
-        values ('00000000-0000-0000-0000-000000000000', uid, 'authenticated', 'authenticated', accs[i][1],
-                crypt(accs[i][2], gen_salt('bf')), now(),
-                '{"provider":"email","providers":["email"]}'::jsonb, jsonb_build_object('full_name', accs[i][3]),
-                now(), now(), '', '', '', '');
-        insert into auth.identities (id, user_id, provider_id, identity_data, provider, last_sign_in_at, created_at, updated_at)
-        values (gen_random_uuid(), uid, uid::text,
-                jsonb_build_object('sub', uid::text, 'email', accs[i][1], 'email_verified', true), 'email', now(), now(), now());
-      end if;
-      insert into public.profiles (id, full_name, email) values (uid, accs[i][3], accs[i][1]) on conflict (id) do nothing;
-      for a in select role from public.hm_preset_roles where email = accs[i][1] loop
-        execute 'insert into public.user_roles (user_id, role) values ($1, $2::public.app_role) on conflict do nothing' using uid, a.role;
-      end loop;
-    exception when others then
-      raise notice 'تعذر إنشاء الحساب % تلقائياً (%). أنشئه من «حساب جديد» بنفس البريد وستُعيَّن الوظيفة تلقائياً.', accs[i][1], sqlerrm;
-    end;
-  end loop;
-end $$;
+-- إعداد حسابات الموظفين منفصل عن إنشاء الجداول: انظر README وملف 0004.
 
 -- سياسات افتراضية لبوابة الموظفين (مرة واحدة)
 insert into public.hr_policies (title, category, body)

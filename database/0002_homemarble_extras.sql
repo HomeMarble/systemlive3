@@ -524,15 +524,4 @@ grant execute on function public.hm_submit_password_request(text, text, text, te
   public.hm_room_join(text, text), public.hm_room_send(uuid, uuid, text), public.hm_room_fetch(uuid, uuid, timestamptz)
   to anon, authenticated;
 
-do $$ declare t text; begin
-  if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
-    foreach t in array array['branches','profiles','user_roles','customers','orders','documents',
-                             'support_password_requests','support_messages','chat_rooms','chat_messages',
-                             'saved_reports','deleted_records'] loop
-      if to_regclass('public.' || t) is not null then
-        begin execute format('alter publication supabase_realtime add table public.%I', t);
-        exception when duplicate_object then null; when others then null; end;
-      end if;
-    end loop;
-  end if;
-end $$;
+-- Realtime membership: see 0004.

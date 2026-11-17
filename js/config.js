@@ -1,5 +1,6 @@
-// إعدادات الاتصال بقاعدة البيانات (Lovable Cloud) — مفتاح عام آمن للاستخدام في المتصفح
+// من لوحة مشروع Supabase المستقل، انسخ Project URL والمفتاح العام فقط.
+// لا تضع كلمة مرور أو مفتاح secret / service_role هنا. لا يوجد اتصال احتياطي.
 window.HM_CONFIG = {
-  url: "https://fleaysohzoclftwqqybh.supabase.co",
-  key: "sb_publishable_SwK8d_nEQvx-XHkzlHQKMQ_hQacueAB",
+  url: "",
+  key: "",
 };

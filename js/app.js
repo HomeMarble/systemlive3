@@ -1,8 +1,28 @@
 /* هوم ماربل — نظام الإدارة | المرحلة الأولى + المرحلة الثانية (إضافات عبر نقاط ربط فقط) */
 (function () {
-  const sb = supabase.createClient(HM_CONFIG.url, HM_CONFIG.key);
   const $ = (s, r) => (r || document).querySelector(s);
   const app = $("#app");
+  const cfg = window.HM_CONFIG || {};
+  const url = String(cfg.url || "").trim().replace(/\/$/, "");
+  const key = String(cfg.key || "").trim();
+  function isPublicKey(value) {
+    if (/^sb_publishable_[\w-]+$/.test(value)) return true;
+    // Legacy anon JWTs are public; service_role JWTs must never be used here.
+    const parts = value.split(".");
+    if (parts.length !== 3) return false;
+    try { return JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/"))).role === "anon"; }
+    catch { return false; }
+  }
+  function bootMessage(title, text) {
+    app.innerHTML = `<main class="pending"><section class="card" role="alert"><h2>${title}</h2><p>${text}</p></section></main>`;
+  }
+  if (!/^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(url) || !isPublicKey(key)) {
+    return bootMessage("اتصال Supabase غير مُعدّ", "على مسؤول النظام ضبط رابط المشروع المستقل (Project URL) والمفتاح العام (Publishable أو anon) في js/config.js ثم إعادة تحميل الصفحة. لا تستخدم مفتاحاً سرياً.");
+  }
+  if (!window.supabase || !window.supabase.createClient) {
+    return bootMessage("تعذّر تحميل مكتبة Supabase", "تحقّق من اتصال الإنترنت ثم أعد تحميل الصفحة.");
+  }
+  const sb = window.supabase.createClient(url, key);
 
   // ---------- نقاط ربط الإضافات (المرحلة الثانية) — لا تؤثر على المرحلة الأولى إن لم توجد إضافات ----------
   const HMX = window.HM_EXT || [];
@@ -90,20 +110,31 @@
   function subscribeRealtime() {
     if (S.channel) sb.removeChannel(S.channel);
     S.channel = sb.channel("hm-live-" + Math.random().toString(36).slice(2));
-    ["customers", "orders", "documents", "user_roles", "profiles"].concat(...X("realtimeTables").filter(Array.isArray)).forEach((t) =>
+    ["customers", "orders", "documents", "user_roles", "profiles", "branches"].concat(...X("realtimeTables").filter(Array.isArray)).forEach((t) =>
       S.channel.on("postgres_changes", { event: "*", schema: "public", table: t }, () => {
         clearTimeout(reloadTimer);
-        reloadTimer = setTimeout(async () => { await loadRoles(); await loadAll(); render(true); }, 300);
+        reloadTimer = setTimeout(() => refresh(true), 300);
       })
     );
     S.channel.subscribe();
   }
 
   async function loadRoles() {
-    const { data } = await sb.from("user_roles").select("role").eq("user_id", S.user.id);
-    S.roles = (data || []).map((r) => r.role);
-    const p = await sb.from("profiles").select("*").eq("id", S.user.id).maybeSingle();
-    S.profile = p.data;
+    const uid = S.user && S.user.id;
+    if (!uid) return false;
+    const [roles, profile] = await Promise.all([
+      sb.from("user_roles").select("role").eq("user_id", uid),
+      sb.from("profiles").select("*").eq("id", uid).maybeSingle(),
+    ]);
+    if (!S.user || S.user.id !== uid) return false;
+    if (roles.error || profile.error) {
+      S.roles = []; S.profile = null;
+      bootMessage("تعذّر تحميل صلاحيات الحساب", "تحقّق من اتصال Supabase وإعداد جداول النظام ثم أعد تحميل الصفحة. لم يتم تغيير صلاحياتك.");
+      return false;
+    }
+    S.roles = (roles.data || []).map((r) => r.role);
+    S.profile = profile.data;
+    return true;
   }
 
   // ---------- auth ----------
@@ -134,9 +165,9 @@
           const { error } = await sb.auth.signInWithPassword({ email: f.email, password: f.password });
           if (error) throw error;
         } else if (mode === "up") {
-          const { error } = await sb.auth.signUp({ email: f.email, password: f.password, options: { data: { full_name: f.full_name }, ...(location.protocol.startsWith("http") ? { emailRedirectTo: location.href.split("#")[0] } : {}) } });
+          const { data, error } = await sb.auth.signUp({ email: f.email, password: f.password, options: { data: { full_name: f.full_name }, ...(location.protocol.startsWith("http") ? { emailRedirectTo: location.href.split("#")[0] } : {}) } });
           if (error) throw error;
-          toast("تم إنشاء الحساب وتسجيل الدخول", "ok");
+          toast(data.session ? "تم إنشاء الحساب وتسجيل الدخول" : "راجع بريدك لتأكيد الحساب قبل تسجيل الدخول", "ok");
         } else {
           const { error } = await sb.auth.resetPasswordForEmail(f.email, { redirectTo: location.href.split("#")[0] + "#/reset-password" });
           if (error) throw error;
@@ -429,7 +460,7 @@
       ${S.profiles.map((p) => { const rs = S.allRoles.filter((r) => r.user_id === p.id).map((r) => r.role); return `<tr><td><b>${esc(p.full_name)}</b>${rs.length ? "" : ' <span class="badge b-yellow">بانتظار التفعيل</span>'}</td><td dir="ltr" style="text-align:right">${esc(p.email)}</td>
         <td>${admin ? `<select class="input" data-branch="${p.id}" style="min-width:130px"><option value="">—</option>${S.branches.map((b) => `<option value="${b.id}" ${p.branch_id === b.id ? "selected" : ""}>${esc(b.name)}</option>`).join("")}</select>` : esc(branchName(p.branch_id))}</td>
         ${Object.keys(ROLE_LABEL).map((r) => `<td style="text-align:center"><input type="checkbox" class="check" style="accent-color:var(--brand);width:18px;height:18px" data-role="${r}" data-uid="${p.id}" ${rs.includes(r) ? "checked" : ""} ${admin && !(p.id === S.user.id && r === "admin") ? "" : "disabled"}></td>`).join("")}</tr>`; }).join("")}
-      </tbody></table></div><p style="font-size:13px;color:var(--muted);margin-top:12px">الموظف الجديد ينشئ حسابه من شاشة الدخول ← "حساب جديد"، ثم يظهر هنا لتفعيله. أول حساب في النظام يصبح مدير النظام تلقائياً.</p></div>
+      </tbody></table></div><p style="font-size:13px;color:var(--muted);margin-top:12px">الموظف الجديد ينشئ حسابه من شاشة الدخول ← "حساب جديد"، ثم يظهر هنا لتفعيله. لا يحصل أي حساب على صلاحية تلقائياً.</p></div>
       ${admin ? `<div class="card mt"><div class="card-head"><h3>الفروع / المعارض</h3><button class="btn btn-ghost btn-sm" data-act="new-branch">${icon("plus", 16)} فرع جديد</button></div><div class="tbl-wrap"><table><thead><tr><th>الفرع</th><th>المدينة</th><th>العملاء</th><th>الطلبات</th></tr></thead><tbody>${S.branches.map((b) => `<tr><td>${esc(b.name)}</td><td>${esc(b.city)}</td><td>${S.customers.filter((c) => c.branch_id === b.id).length}</td><td>${S.orders.filter((o) => o.branch_id === b.id).length}</td></tr>`).join("")}</tbody></table></div></div>` : ""}`;
   }
 
@@ -558,7 +589,17 @@
   }
 
   // ---------- actions ----------
-  async function refresh() { await loadAll(); render(true); }
+  async function refresh(recheckRoles = false) {
+    if (!S.user) return;
+    const previous = S.roles.slice().sort().join(",");
+    if (recheckRoles && !(await loadRoles())) return;
+    // Pending accounts need to poll their role, not every business table.
+    if (!recheckRoles || previous || S.roles.length) await loadAll();
+    // The support/report subscriptions depend on the current roles. Rebuild
+    // them if a manager activates an employee or changes their assignment.
+    if (recheckRoles && S.user && (!S.channel || previous !== S.roles.slice().sort().join(","))) subscribeRealtime();
+    render(true);
+  }
 
   async function handleAction(el) {
     const a = el.dataset.act;
@@ -644,10 +685,14 @@
     if (location.hash.includes("type=recovery") || location.hash === "#/reset-password") { if (S.session) return renderResetPassword(); }
     if (!S.session) return renderAuth("in");
     const u = await sb.auth.getUser();
+    if (u.error && (!u.error.status || u.error.status >= 500 || u.error.status === 429)) {
+      return bootMessage("تعذّر التحقق من الجلسة الآن", "تحقّق من اتصال Supabase ثم أعد تحميل الصفحة. لم يتم تسجيل خروجك.");
+    }
     if (u.error || !u.data.user) { await sb.auth.signOut(); return renderAuth("in"); }
     S.user = u.data.user;
     S.route = location.hash.replace(/^#\/?/, "");
-    await loadRoles(); await loadAll(); subscribeRealtime(); render(false);
+    if (!(await loadRoles())) return;
+    await loadAll(); subscribeRealtime(); render(false);
   }
 
   // تمرير الأدوات المشتركة للإضافات (المرحلة الثانية)
@@ -659,7 +704,13 @@
     const uid = session && session.user.id;
     if (uid === lastUid && ev !== "SIGNED_OUT") return;
     lastUid = uid;
-    if (!session) { S.user = null; S.roles = []; if (S.channel) sb.removeChannel(S.channel); return renderAuth("in"); }
+    if (!session) {
+      clearTimeout(reloadTimer);
+      S.user = null; S.roles = []; S.profile = null;
+      if (S.channel) sb.removeChannel(S.channel);
+      S.channel = null;
+      return renderAuth("in");
+    }
     setTimeout(boot, 0);
   });
 })();

@@ -1,0 +1,55 @@
+-- TEST ONLY: disposable Supabase-compatible database after 0000–0004.
+-- psql -Xq "$TEST_DB_URL" -f tests/standalone.psql (all test writes rolled back)
+\set ON_ERROR_STOP on
+begin;
+create temp table fixture as select gen_random_uuid() id, gen_random_uuid() customer_id,
+       'test-' || gen_random_uuid() || '@example.invalid' email, gen_random_uuid()::text hash_sentinel,
+       (select id from public.branches where name = 'معرض الرياض' limit 1) branch_id;
+insert into auth.users (id, email, encrypted_password, raw_user_meta_data)
+  select id, email, hash_sentinel, '{"full_name":"موظف اختبار"}' from fixture;
+do $$ begin
+  if not exists (select 1 from public.profiles p join fixture f using (id) where p.email = f.email)
+     or exists (select 1 from public.user_roles r join fixture f on r.user_id = f.id) then
+    raise exception 'New employee should have a pending profile without roles';
+  end if;
+end $$;
+insert into public.user_roles (user_id, role) select id, 'sales' from fixture;
+update public.profiles p set branch_id = f.branch_id from fixture f where p.id = f.id;
+insert into public.customers (id, name, created_by) select customer_id, 'عميل اختبار', id from fixture;
+
+-- The post-restore step must also work after data import and when some
+-- publication membership already exists. It must not reseed user records.
+alter publication supabase_realtime drop table public.orders;
+\ir ../database/0004_standalone_supabase.sql
+\ir ../database/0004_standalone_supabase.sql
+do $$ begin
+  if not exists (select 1 from fixture f join auth.users u on f.id = u.id and f.hash_sentinel = u.encrypted_password
+                 join public.profiles p on p.id = u.id and p.branch_id = f.branch_id
+                 join public.user_roles ur on ur.user_id = p.id and ur.role = 'sales'
+                 join public.customers c on c.id = f.customer_id and c.created_by = u.id) then
+    raise exception 'Cutover changed an existing identity, assignment or record';
+  end if;
+  if (select count(*) from public.hm_preset_roles) <> 15
+     or has_table_privilege('authenticated','public.hm_preset_roles','SELECT')
+     or has_table_privilege('anon','public.hm_preset_roles','SELECT') then
+    raise exception 'Expected private 15-account roster';
+  end if;
+  if not exists (select 1 from storage.buckets where id = 'hm-files' and not public)
+     or (select count(*) from pg_policies where schemaname = 'storage' and tablename = 'objects'
+         and policyname in ('hm_files_read','hm_files_insert','hm_files_delete')) <> 3 then
+    raise exception 'Private bucket/policies missing';
+  end if;
+  if (select count(*) from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public') <> 31 then
+    raise exception 'Incomplete publication on fresh install';
+  end if;
+end $$;
+select set_config('request.jwt.claims', json_build_object('sub', id, 'email', email)::text, true) from fixture;
+set local role authenticated;
+do $$ begin
+  if not public.hm_has_any(array['sales']) or public.hm_is_mgr()
+     or exists (select 1 from public.user_roles where user_id = auth.uid() and role <> 'sales')
+     or not exists (select 1 from public.customers where created_by = auth.uid()) then
+    raise exception 'Sales permissions changed';
+  end if;
+end $$;
+rollback;
