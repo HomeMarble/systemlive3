@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src https://*.supabase.co; base-uri 'none'; form-action 'none'">
+  <title>فحص اتصال هوم ماربل</title>
+  <link rel="stylesheet" href="css/style.css?v=5.5.0">
+</head>
+<body>
+  <main class="pending"><section class="card" aria-labelledby="title">
+    <h1 id="title">فحص اتصال هوم ماربل</h1>
+    <p class="mt">يفحص خدمة الدخول وواجهة البيانات من جهازك. لا يحتاج إلى بريد أو كلمة مرور ولا يغيّر أي بيانات.</p>
+    <p class="mt">وجهة الفحص: <bdi id="hm-destination">جارٍ قراءة إعدادات النسخة…</bdi></p>
+    <div class="net-check"><button type="button" class="btn btn-primary" id="hm-check" disabled>فحص الاتصال</button><p id="hm-status" role="status" aria-live="polite"></p></div>
+    <details class="net-target mt"><summary>اختياري: فحص مشروع مستقل قبل ربطه</summary>
+      <p>هذا الفحص لا يغيّر الموقع. أدخل القيم <strong>العامة فقط</strong>؛ لا تدخل كلمة مرور أو مفتاح secret أو service_role. لا تُحفظ القيم في المتصفح.</p>
+      <label for="hm-url">Project URL</label><input class="input" id="hm-url" type="url" dir="ltr" autocomplete="off" spellcheck="false">
+      <label for="hm-public">Publishable أو anon (مفتاح المتصفح)</label><input class="input" id="hm-public" dir="ltr" autocomplete="off" spellcheck="false">
+      <button type="button" class="btn btn-line mt" id="hm-test-target">فحص المشروع فقط</button><p class="net-result" id="hm-target-status" role="status" aria-live="polite"></p>
+    </details>
+    <p class="mt">يمكنك مشاركة نص النتيجة مع المسؤول. إذا فتحت هذه الأداة من عنوان غير موقع الموظفين، فقد تختلف قيود المتصفح بين العنوانين.</p>
+    <noscript>شغّل JavaScript لاستخدام الفحص.</noscript>
+  </section></main>
+  <script src="js/config.js?v=5.5.0"></script>
+  <script src="js/connection.js?v=5.5.0"></script>
+  <script src="js/check-page.js?v=5.5.0"></script>
+</body>
+</html>

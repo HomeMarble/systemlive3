@@ -2,7 +2,8 @@
    ملف إضافي بالكامل يتصل بالمرحلة الأولى عبر نقاط الربط (window.HM_EXT) دون تعديل أي ميزة قائمة. */
 (function () {
   let C = null; // أدوات المرحلة الأولى المشتركة
-  const P = { items: [], logs: [], qc: [], suppliers: [], inv: [], moves: [], res: [], prs: [], visits: [], jobs: [], staff: [], urls: {}, missing: false, f: {} };
+  const emptyState = () => ({ items: [], logs: [], qc: [], suppliers: [], inv: [], moves: [], res: [], prs: [], visits: [], jobs: [], staff: [], urls: {}, missing: false, f: {} });
+  const P = emptyState();
 
   // ---------- ثوابت ----------
   const P2_ROLES = { purchasing: "المشتريات", warehouse: "أمين المستودع", cutting_supervisor: "مشرف القص", assembly_supervisor: "مشرف التجميع", polishing_supervisor: "مشرف التلميع", quality_inspector: "مراقب الجودة", measurement_tech: "فني القياسات", installer: "فريق التركيبات" };
@@ -77,7 +78,7 @@
   const saveBtns = (label) => `<button class="btn btn-primary" id="p2save">${label || "حفظ"}</button><button class="btn btn-line" data-close>إلغاء</button>`;
   const emptyRow = (cols, msg) => `<tr><td colspan="${cols}" class="empty">${msg || "لا توجد بيانات"}</td></tr>`;
   const kpi = (lbl, val, unit, icn, foot) => `<div class="card"><div class="kpi"><div><div class="lbl">${lbl}</div><div class="val">${val}</div><div class="unit">${unit || ""}</div></div><div class="ico">${ic(icn, 26)}</div></div>${foot ? `<div class="kpi-foot">${foot}</div>` : ""}</div>`;
-  const missingBanner = () => "";
+  const missingBanner = () => P.missing ? '<p class="p2-warn" role="alert">بعض جداول المرحلة الثانية غير مثبتة في مشروع Supabase؛ بيانات هذا القسم غير مكتملة.</p>' : "";
   const noAccess = () => '<div class="empty">لا تملك صلاحية الوصول لهذه الصفحة</div>';
   const toLocalInput = (t) => { if (!t) return ""; const x = new Date(t); const z = new Date(x.getTime() - x.getTimezoneOffset() * 60000); return z.toISOString().slice(0, 16); };
 
@@ -132,7 +133,7 @@
   }
 
   // ---------- تحميل البيانات ----------
-  async function load() {
+  async function load(core) {
     const q = await Promise.all([
       C.sb.from("order_items").select("*").order("sort"),
       C.sb.from("production_logs").select("*").order("created_at", { ascending: false }).limit(600),
@@ -145,10 +146,13 @@
       C.sb.from("measurement_visits").select("*").order("scheduled_at", { ascending: true }),
       C.sb.from("installation_jobs").select("*").order("scheduled_date", { ascending: true }),
     ]);
-    P.missing = q.some((r) => r.error && /does not exist|schema cache|relation|Could not find/i.test(r.error.message || ""));
-    [P.items, P.logs, P.qc, P.suppliers, P.inv, P.moves, P.res, P.prs, P.visits, P.jobs] = q.map((r) => r.data || []);
-    const st = await C.sb.rpc("hm_staff_directory");
-    P.staff = (st && st.data) || C.S.profiles.map((p) => ({ id: p.id, full_name: p.full_name, email: p.email, roles: C.S.allRoles.filter((r) => r.user_id === p.id).map((r) => r.role) }));
+    const lists = q.map(r => C.net.rows(r, true));
+    const st = await C.sb.rpc("hm_staff_directory", {}, { get: true });
+    const staff = C.net.missing(st) ? core.profiles.map(p => ({ id: p.id, full_name: p.full_name, email: p.email, roles: core.allRoles.filter(r => r.user_id === p.id).map(r => r.role) })) : C.net.rows(st);
+    return () => {
+      P.missing = q.some(C.net.missing) || C.net.missing(st); P.staff = staff;
+      [P.items, P.logs, P.qc, P.suppliers, P.inv, P.moves, P.res, P.prs, P.visits, P.jobs] = lists;
+    };
   }
 
   // =====================================================================
@@ -1104,6 +1108,7 @@
   window.HM_EXT.push({
     name: "phase2",
     init(ctx) { C = ctx; Object.assign(C.ROLE_LABEL, P2_ROLES); },
+    clearSnapshot() { Object.assign(P, emptyState()); },
     load,
     realtimeTables: () => ["order_items", "production_logs", "quality_checks", "suppliers", "inventory_items", "inventory_movements", "inventory_reservations", "purchase_requests", "measurement_visits", "installation_jobs"],
     nav, alerts, search, dashboard, home, customerSection, orderSection, docSection, action, bind,

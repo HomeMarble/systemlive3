@@ -11,3 +11,6 @@ backups/
 *.hmbak
 *.zip
 __pycache__/
+
+# Development-only DOM test runner.
+node_modules/
